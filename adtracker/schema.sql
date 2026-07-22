@@ -126,6 +126,9 @@ CREATE TABLE leads (
     -- CRM-style fields, editable in the dashboard
     status          TEXT NOT NULL DEFAULT 'new',
         -- 'new' | 'contacted' | 'qualified' | 'won' | 'lost'
+        -- Mapped from external CRM: Open→new, appointment set→contacted, 
+        -- pre-sale qualified→qualified, proposal→qualified, site assessment→qualified,
+        -- closed won→won, closed lost→lost
     value           NUMERIC(12,2),              -- deal value, editable
     notes           TEXT,
 
