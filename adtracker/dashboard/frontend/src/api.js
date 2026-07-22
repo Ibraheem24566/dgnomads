@@ -1,4 +1,4 @@
-const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:3002";
+const API_BASE = (import.meta.env.VITE_API_BASE || "http://localhost:3002").replace(/\/$/, "");
 
 function authHeader() {
   const creds = localStorage.getItem("adtracker_creds");
