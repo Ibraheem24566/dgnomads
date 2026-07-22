@@ -15,6 +15,9 @@ ALTER TABLE leads
   ADD COLUMN IF NOT EXISTS closed_lost_reason TEXT,
   ADD COLUMN IF NOT EXISTS crm_lead_id TEXT;
 
+-- Update existing source values to valid ones before adding constraint
+UPDATE leads SET source = 'api' WHERE source NOT IN ('api', 'manual', 'crm_sync', 'google_ads');
+
 -- Update source type to include crm_sync
 ALTER TABLE leads 
   ALTER COLUMN source DROP DEFAULT,
