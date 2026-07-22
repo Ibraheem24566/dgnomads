@@ -134,4 +134,95 @@ router.get("/:id/history", async (req, res) => {
   }
 });
 
+// POST /api/leads/sync-status -- bulk status update from external source (Google Sheets, CRM, etc.)
+// Matches leads by email or phone and updates status
+router.post("/sync-status", async (req, res) => {
+  const { leads } = req.body; // Array of { email, phone, status }
+
+  if (!Array.isArray(leads)) {
+    return res.status(400).json({ error: "leads must be an array" });
+  }
+
+  const STATUS_MAPPING = {
+    "open": "new",
+    "appointment set": "contacted",
+    "pre-sale qualified": "qualified",
+    "proposal": "qualified",
+    "site assessment": "qualified",
+    "closed won": "won",
+    "closed lost": "lost"
+  };
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    let updated = 0;
+    let matched = 0;
+    const results = [];
+
+    for (const leadData of leads) {
+      const { email, phone, status } = leadData;
+      
+      if (!email && !phone) {
+        results.push({ error: "Missing email or phone", data: leadData });
+        continue;
+      }
+
+      const mappedStatus = STATUS_MAPPING[status.toLowerCase()];
+      if (!mappedStatus) {
+        results.push({ error: `Unmapped status: ${status}`, data: leadData });
+        continue;
+      }
+
+      // Match lead by email or phone
+      const { rows } = await client.query(
+        `SELECT id, status FROM leads 
+         WHERE email = $1 OR phone = $2 
+         LIMIT 1`,
+        [email, phone]
+      );
+
+      if (rows.length === 0) {
+        results.push({ error: "No matching lead found", data: leadData });
+        continue;
+      }
+
+      matched++;
+      const lead = rows[0];
+
+      // Only update if status changed
+      if (lead.status !== mappedStatus) {
+        await client.query(
+          `UPDATE leads 
+           SET status = $1, updated_at = NOW()
+           WHERE id = $2`,
+          [mappedStatus, lead.id]
+        );
+
+        // Log the change to lead_edits
+        await client.query(
+          `INSERT INTO lead_edits (lead_id, field_name, old_value, new_value)
+           VALUES ($1, 'status', $2, $3)`,
+          [lead.id, lead.status, mappedStatus]
+        );
+
+        updated++;
+        results.push({ success: true, lead_id: lead.id, old_status: lead.status, new_status: mappedStatus });
+      } else {
+        results.push({ success: true, lead_id: lead.id, unchanged: true });
+      }
+    }
+
+    await client.query("COMMIT");
+    res.json({ matched, updated, results });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    console.error("Failed to sync status:", err);
+    res.status(500).json({ error: "Failed to sync status" });
+  } finally {
+    client.release();
+  }
+});
+
 module.exports = router;
