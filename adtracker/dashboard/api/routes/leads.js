@@ -226,7 +226,7 @@ router.post("/sync-status", async (req, res) => {
 });
 
 // POST /api/leads/sync-crm -- full CRM sync with all fields from Google Sheets
-// Matches leads by email/phone/crm_lead_id and creates or updates with full data
+// Only UPDATES existing leads (no creation) - for daily status updates
 router.post("/sync-crm", async (req, res) => {
   const { leads } = req.body; // Array of full lead objects from CRM
 
@@ -249,7 +249,6 @@ router.post("/sync-crm", async (req, res) => {
     await client.query("BEGIN");
 
     let updated = 0;
-    let created = 0;
     let matched = 0;
     const results = [];
 
@@ -260,7 +259,6 @@ router.post("/sync-crm", async (req, res) => {
         last_name,
         email,
         phone,
-        created_date,
         lead_source,
         last_modified_date,
         status,
@@ -302,74 +300,169 @@ router.post("/sync-crm", async (req, res) => {
       }
 
       if (rows.length === 0) {
-        // Create new lead
-        const name = [first_name, last_name].filter(Boolean).join(' ') || null;
-        const { rows: newLead } = await client.query(
-          `INSERT INTO leads (name, first_name, last_name, email, phone, full_address, zip_code,
-             lead_source, stage, opportunity_name, converted, converted_date, outbound_calls,
-             disqualified_reason, closed_lost_reason, web_source_campaign, status, source, crm_lead_id,
-             created_at, updated_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
-           RETURNING id`,
-          [
-            name, first_name, last_name, email, phone, full_address, zip_code,
-            lead_source, stage, opportunity_name, 
-            converted === true || converted === 'Yes' || converted === 'TRUE',
-            converted_date || null,
-            parseInt(outbound_calls) || 0,
-            disqualified_reason, closed_lost_reason, web_source_campaign,
-            mappedStatus, 'crm_sync', crm_lead_id,
-            created_date || new Date().toISOString(),
-            last_modified_date || new Date().toISOString()
-          ]
-        );
-        created++;
-        results.push({ success: true, lead_id: newLead[0].id, action: 'created' });
-      } else {
-        // Update existing lead
-        const lead = rows[0];
-        const name = [first_name, last_name].filter(Boolean).join(' ') || lead.name;
-        
-        await client.query(
-          `UPDATE leads 
-           SET name = $1, first_name = $2, last_name = $3, email = $4, phone = $5, full_address = $6, zip_code = $7,
-              lead_source = $8, stage = $9, opportunity_name = $10, converted = $11, converted_date = $12, 
-              outbound_calls = $13, disqualified_reason = $14, closed_lost_reason = $15, 
-              web_source_campaign = $16, status = $17, crm_lead_id = $18, updated_at = $19
-           WHERE id = $20`,
-          [
-            name, first_name, last_name, email, phone, full_address, zip_code,
-            lead_source, stage, opportunity_name,
-            converted === true || converted === 'Yes' || converted === 'TRUE',
-            converted_date || null,
-            parseInt(outbound_calls) || 0,
-            disqualified_reason, closed_lost_reason, web_source_campaign,
-            mappedStatus, crm_lead_id, last_modified_date || new Date().toISOString(),
-            lead.id
-          ]
-        );
-
-        // Log status change if different
-        if (lead.status !== mappedStatus) {
-          await client.query(
-            `INSERT INTO lead_edits (lead_id, field_name, old_value, new_value)
-             VALUES ($1, 'status', $2, $3)`,
-            [lead.id, lead.status, mappedStatus]
-          );
-        }
-
-        updated++;
-        results.push({ success: true, lead_id: lead.id, action: 'updated' });
+        results.push({ error: "No matching lead found (use /api/leads/create-from-logs for new leads)", data: leadData });
+        continue;
       }
+
+      // Update existing lead
+      const lead = rows[0];
+      const name = [first_name, last_name].filter(Boolean).join(' ') || lead.name;
+      
+      await client.query(
+        `UPDATE leads 
+         SET name = $1, first_name = $2, last_name = $3, email = $4, phone = $5, full_address = $6, zip_code = $7,
+            lead_source = $8, stage = $9, opportunity_name = $10, converted = $11, converted_date = $12, 
+            outbound_calls = $13, disqualified_reason = $14, closed_lost_reason = $15, 
+            web_source_campaign = $16, status = $17, crm_lead_id = $18, updated_at = $19
+         WHERE id = $20`,
+        [
+          name, first_name, last_name, email, phone, full_address, zip_code,
+          lead_source, stage, opportunity_name,
+          converted === true || converted === 'Yes' || converted === 'TRUE',
+          converted_date || null,
+          parseInt(outbound_calls) || 0,
+          disqualified_reason, closed_lost_reason, web_source_campaign,
+          mappedStatus, crm_lead_id, last_modified_date || new Date().toISOString(),
+          lead.id
+        ]
+      );
+
+      // Log status change if different
+      if (lead.status !== mappedStatus) {
+        await client.query(
+          `INSERT INTO lead_edits (lead_id, field_name, old_value, new_value)
+           VALUES ($1, 'status', $2, $3)`,
+          [lead.id, lead.status, mappedStatus]
+        );
+      }
+
+      updated++;
       matched++;
+      results.push({ success: true, lead_id: lead.id, action: 'updated' });
     }
 
     await client.query("COMMIT");
-    res.json({ matched, updated, created, results });
+    res.json({ matched, updated, results });
   } catch (err) {
     await client.query("ROLLBACK");
     console.error("Failed to sync CRM data:", err);
     res.status(500).json({ error: "Failed to sync CRM data" });
+  } finally {
+    client.release();
+  }
+});
+
+// POST /api/leads/create-from-logs -- Create new lead from logs with keyword attribution
+// This is for initial lead creation when a lead first comes in
+router.post("/create-from-logs", async (req, res) => {
+  const lead = req.body;
+  
+  const {
+    crm_lead_id,
+    first_name,
+    last_name,
+    email,
+    phone,
+    created_date,
+    lead_source,
+    gclid,
+    utm_source,
+    utm_medium,
+    utm_campaign,
+    utm_term,
+    landing_page,
+    raw_keyword_text,
+    web_source_campaign,
+    full_address,
+    zip_code
+  } = lead;
+
+  if (!email && !phone) {
+    return res.status(400).json({ error: "Email or phone required" });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    // Resolve keyword attribution
+    let campaign_id = null, ad_group_id = null, keyword_id = null, match_status = "no_tracking_data";
+    
+    if (gclid || raw_keyword_text) {
+      // Try to match by gclid first
+      if (gclid) {
+        const { rows } = await client.query(
+          `SELECT c.id AS campaign_id, ag.id AS ad_group_id, k.id AS keyword_id
+           FROM gclid_mappings gm
+           JOIN keywords k ON k.id = gm.keyword_id
+           JOIN ad_groups ag ON ag.id = k.ad_group_id
+           JOIN campaigns c ON c.id = ag.campaign_id
+           WHERE gm.gclid = $1
+           ORDER BY gm.created_at DESC
+           LIMIT 1`,
+          [gclid]
+        );
+        
+        if (rows.length > 0) {
+          ({ campaign_id, ad_group_id, keyword_id } = rows[0]);
+          match_status = "matched";
+        }
+      }
+      
+      // Fallback: try matching by raw_keyword_text if gclid didn't match
+      if (!keyword_id && raw_keyword_text) {
+        const { rows } = await client.query(
+          `SELECT k.id AS keyword_id, ag.id AS ad_group_id, c.id AS campaign_id
+           FROM keywords k
+           JOIN ad_groups ag ON ag.id = k.ad_group_id
+           JOIN campaigns c ON c.id = ag.campaign_id
+           WHERE k.text = $1
+           LIMIT 1`,
+          [raw_keyword_text]
+        );
+        
+        if (rows.length > 0) {
+          ({ campaign_id, ad_group_id, keyword_id } = rows[0]);
+          match_status = "matched";
+        } else {
+          match_status = "no_match";
+        }
+      }
+    }
+
+    const name = [first_name, last_name].filter(Boolean).join(' ') || null;
+    
+    // Create lead with status 'open' (mapped to 'new')
+    const { rows: newLead } = await client.query(
+      `INSERT INTO leads (name, first_name, last_name, email, phone, full_address, zip_code,
+         gclid, utm_source, utm_medium, utm_campaign, utm_term, landing_page, raw_keyword_text,
+         web_source_campaign, campaign_id, ad_group_id, keyword_id, match_status,
+         lead_source, status, source, crm_lead_id, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)
+       RETURNING id`,
+      [
+        name, first_name, last_name, email, phone, full_address, zip_code,
+        gclid, utm_source, utm_medium, utm_campaign, utm_term, landing_page, raw_keyword_text,
+        web_source_campaign, campaign_id, ad_group_id, keyword_id, match_status,
+        lead_source, 'new', 'logs', crm_lead_id,
+        created_date || new Date().toISOString(),
+        new Date().toISOString()
+      ]
+    );
+
+    await client.query("COMMIT");
+    res.json({ 
+      success: true, 
+      lead_id: newLead[0].id, 
+      match_status,
+      keyword_id,
+      campaign_id,
+      message: "Lead created with keyword attribution and status 'open'"
+    });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    console.error("Failed to create lead from logs:", err);
+    res.status(500).json({ error: "Failed to create lead from logs" });
   } finally {
     client.release();
   }

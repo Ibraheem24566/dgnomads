@@ -16,10 +16,10 @@ ALTER TABLE leads
   ADD COLUMN IF NOT EXISTS crm_lead_id TEXT;
 
 -- Update existing source values to valid ones before adding constraint
-UPDATE leads SET source = 'api' WHERE source NOT IN ('api', 'manual', 'crm_sync', 'google_ads');
+UPDATE leads SET source = 'api' WHERE source NOT IN ('api', 'manual', 'crm_sync', 'google_ads', 'logs');
 
--- Update source type to include crm_sync
+-- Update source type to include crm_sync and logs
 ALTER TABLE leads 
   ALTER COLUMN source DROP DEFAULT,
   ALTER COLUMN source SET DEFAULT 'api',
-  ADD CONSTRAINT check_source CHECK (source IN ('api', 'manual', 'crm_sync', 'google_ads'));
+  ADD CONSTRAINT check_source CHECK (source IN ('api', 'manual', 'crm_sync', 'google_ads', 'logs'));
