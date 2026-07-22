@@ -1,0 +1,25 @@
+{
+  "builds": [
+    {
+      "src": "adtracker/dashboard/frontend/package.json",
+      "use": "@vercel/static-build",
+      "config": {
+        "distDir": "dist"
+      }
+    },
+    {
+      "src": "adtracker/dashboard/api/server.js",
+      "use": "@vercel/node"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/api/(.*)",
+      "dest": "/adtracker/dashboard/api/server.js"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "/adtracker/dashboard/frontend/dist/$1"
+    }
+  ]
+}
