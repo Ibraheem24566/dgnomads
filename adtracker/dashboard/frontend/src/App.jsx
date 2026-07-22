@@ -4,7 +4,7 @@ import OverviewView from "./OverviewView";
 import LeadsView from "./LeadsView";
 import PerformanceView from "./PerformanceView";
 import ThemeToggle from "./ThemeToggle";
-import { hasCredentials, clearCredentials } from "./api";
+import { hasCredentials, clearCredentials, getCampaigns } from "./api";
 
 function getInitialTheme() {
   const saved = localStorage.getItem("adtracker_theme");
@@ -13,7 +13,8 @@ function getInitialTheme() {
 }
 
 export default function App() {
-  const [authed, setAuthed] = useState(hasCredentials());
+  const [authed, setAuthed] = useState(false);
+  const [validating, setValidating] = useState(true);
   const [tab, setTab] = useState("overview");
   const [keywordFilter, setKeywordFilter] = useState(null); // { id, text } | null
   const [theme, setTheme] = useState(getInitialTheme);
@@ -22,6 +23,27 @@ export default function App() {
     document.documentElement.setAttribute("data-theme", theme);
     localStorage.setItem("adtracker_theme", theme);
   }, [theme]);
+
+  useEffect(() => {
+    async function validateCredentials() {
+      if (hasCredentials()) {
+        try {
+          await getCampaigns();
+          setAuthed(true);
+        } catch {
+          clearCredentials();
+        }
+      }
+      setValidating(false);
+    }
+    validateCredentials();
+  }, []);
+
+  if (validating) {
+    return <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh", background: "var(--bg)" }}>
+      <div className="neu-spinner"></div>
+    </div>;
+  }
 
   if (!authed) {
     return <LoginScreen onSuccess={() => setAuthed(true)} />;
