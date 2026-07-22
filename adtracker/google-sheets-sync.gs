@@ -1,4 +1,4 @@
-// Google Apps Script for syncing lead status from Google Sheets to AdTracker
+// Google Apps Script for syncing lead data from Google Sheets to AdTracker
 // Add this to your Google Sheet: Extensions > Apps Script
 
 const API_BASE_URL = "YOUR_API_URL_HERE"; // e.g., https://dgnomads-wcou.vercel.app
@@ -6,39 +6,62 @@ const API_USERNAME = "YOUR_USERNAME";
 const API_PASSWORD = "YOUR_PASSWORD";
 
 /**
- * Sync status updates from the active sheet to AdTracker
- * Sheet should have columns: Email, Phone, Status
+ * Sync lead data from the active sheet to AdTracker
+ * Sheet should have columns: Lead ID, First Name, Last Name, Email, Created Date, 
+ * Lead Source, Last Modified Date, Lead Status, Disqualified Reason*, 
+ * Number of Outbound Calls, Converted, Converted Date, Opportunity Name, Stage,
+ * Closed Lost Reason, Full Address, Zip/Postal Code, Web Source & Campaign
  * Run this function from the Apps Script editor
  */
-function syncLeadStatus() {
+function syncLeadData() {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
   const data = sheet.getDataRange().getValues();
   
   // Skip header row
-  const headers = data[0];
+  const headers = data[0].map(h => String(h).toLowerCase().trim());
   const rows = data.slice(1);
   
   // Find column indices
-  const emailCol = headers.findIndex(h => h.toLowerCase() === 'email');
-  const phoneCol = headers.findIndex(h => h.toLowerCase() === 'phone');
-  const statusCol = headers.findIndex(h => h.toLowerCase() === 'status');
+  const colMap = {};
+  headers.forEach((h, i) => {
+    colMap[h] = i;
+  });
   
-  if (emailCol === -1 && phoneCol === -1) {
-    throw new Error("Sheet must have 'Email' and/or 'Phone' columns");
-  }
-  if (statusCol === -1) {
-    throw new Error("Sheet must have a 'Status' column");
+  const requiredCols = ['email', 'lead status'];
+  for (const col of requiredCols) {
+    if (!headers.includes(col)) {
+      throw new Error(`Sheet must have '${col}' column`);
+    }
   }
   
   // Build lead data array
   const leads = [];
   for (const row of rows) {
-    const email = row[emailCol] || "";
-    const phone = row[phoneCol] || "";
-    const status = row[statusCol] || "";
+    const lead = {
+      crm_lead_id: getCellValue(row, colMap, 'lead id'),
+      first_name: getCellValue(row, colMap, 'first name'),
+      last_name: getCellValue(row, colMap, 'last name'),
+      email: getCellValue(row, colMap, 'email'),
+      phone: getCellValue(row, colMap, 'phone'), // if you have phone column
+      created_date: getCellValue(row, colMap, 'created date'),
+      lead_source: getCellValue(row, colMap, 'lead source'),
+      last_modified_date: getCellValue(row, colMap, 'last modified date'),
+      status: getCellValue(row, colMap, 'lead status'),
+      disqualified_reason: getCellValue(row, colMap, 'disqualified reason'),
+      outbound_calls: getCellValue(row, colMap, 'number of outbound calls'),
+      converted: getCellValue(row, colMap, 'converted'),
+      converted_date: getCellValue(row, colMap, 'converted date'),
+      opportunity_name: getCellValue(row, colMap, 'opportunity name'),
+      stage: getCellValue(row, colMap, 'stage'),
+      closed_lost_reason: getCellValue(row, colMap, 'closed lost reason'),
+      full_address: getCellValue(row, colMap, 'full address'),
+      zip_code: getCellValue(row, colMap, 'zip/postal code'),
+      web_source_campaign: getCellValue(row, colMap, 'web source & campaign')
+    };
     
-    if ((email || phone) && status) {
-      leads.push({ email, phone, status });
+    // Only include leads with email or phone
+    if (lead.email || lead.phone) {
+      leads.push(lead);
     }
   }
   
@@ -50,7 +73,7 @@ function syncLeadStatus() {
   // Send to API
   const auth = Utilities.base64Encode(`${API_USERNAME}:${API_PASSWORD}`);
   
-  const response = UrlFetchApp.fetch(`${API_BASE_URL}/api/leads/sync-status`, {
+  const response = UrlFetchApp.fetch(`${API_BASE_URL}/api/leads/sync-crm`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -70,18 +93,26 @@ function syncLeadStatus() {
   }
   
   const result = JSON.parse(responseBody);
-  Logger.log(`Sync complete: ${result.matched} matched, ${result.updated} updated`);
+  Logger.log(`Sync complete: ${result.matched} matched, ${result.updated} updated, ${result.created} created`);
   
   // Log details
   for (const r of result.results) {
     if (r.error) {
       Logger.log(`Error: ${r.error} - ${JSON.stringify(r.data)}`);
-    } else if (!r.unchanged) {
-      Logger.log(`Updated lead ${r.lead_id}: ${r.old_status} → ${r.new_status}`);
+    } else {
+      Logger.log(`Lead ${r.lead_id}: ${r.action}`);
     }
   }
   
   return result;
+}
+
+function getCellValue(row, colMap, colName) {
+  const colIndex = colMap[colName];
+  if (colIndex === undefined) return null;
+  const value = row[colIndex];
+  if (value === "" || value === undefined) return null;
+  return value;
 }
 
 /**
@@ -91,7 +122,7 @@ function syncLeadStatus() {
 function onOpen() {
   const ui = SpreadsheetApp.getUi();
   ui.createMenu("AdTracker Sync")
-    .addItem("Sync Status Updates", "syncLeadStatus")
+    .addItem("Sync Lead Data", "syncLeadData")
     .addToUi();
 }
 
@@ -103,13 +134,10 @@ function onEdit(e) {
   const sheet = e.source.getActiveSheet();
   const range = e.range;
   
-  // Only sync if editing the Status column
-  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
-  const statusCol = headers.findIndex(h => h.toLowerCase() === 'status') + 1;
-  
-  if (range.getColumn() === statusCol && range.getRow() > 1) {
+  // Sync on any edit (you can restrict to specific columns if needed)
+  if (range.getRow() > 1) {
     // Add a small delay to avoid rate limiting
     Utilities.sleep(1000);
-    syncLeadStatus();
+    syncLeadData();
   }
 }

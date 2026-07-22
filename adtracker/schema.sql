@@ -98,8 +98,12 @@ CREATE INDEX idx_daily_stats_campaign ON daily_stats(campaign_id);
 CREATE TABLE leads (
     id              BIGSERIAL PRIMARY KEY,
     name            TEXT,
+    first_name      TEXT,
+    last_name       TEXT,
     email           TEXT,
     phone           TEXT,
+    full_address    TEXT,
+    zip_code        TEXT,
 
     -- attribution raw inputs
     gclid           TEXT,
@@ -109,6 +113,7 @@ CREATE TABLE leads (
     utm_term        TEXT,
     landing_page    TEXT,
     raw_keyword_text TEXT,   -- literal keyword text from ValueTrack {keyword}, kept even if matching fails, for debugging
+    web_source_campaign TEXT, -- from CRM: Web Source & Campaign
 
     -- resolved attribution (filled in at ingest time by matching
     -- campaign_id + ad_group_id + keyword text against the synced
@@ -129,10 +134,20 @@ CREATE TABLE leads (
         -- Mapped from external CRM: Open→new, appointment set→contacted, 
         -- pre-sale qualified→qualified, proposal→qualified, site assessment→qualified,
         -- closed won→won, closed lost→lost
+    lead_source     TEXT,                    -- from CRM: Lead Source
+    stage           TEXT,                    -- from CRM: Stage
+    opportunity_name TEXT,                  -- from CRM: Opportunity Name
+    converted       BOOLEAN DEFAULT FALSE,  -- from CRM: Converted
+    converted_date  TIMESTAMPTZ,            -- from CRM: Converted Date
+    outbound_calls  INTEGER DEFAULT 0,       -- from CRM: Number of Outbound Calls
+    disqualified_reason TEXT,               -- from CRM: Disqualified Reason
+    closed_lost_reason TEXT,                -- from CRM: Closed Lost Reason
+    
     value           NUMERIC(12,2),              -- deal value, editable
     notes           TEXT,
 
-    source          TEXT NOT NULL DEFAULT 'api', -- 'api' | 'manual'
+    source          TEXT NOT NULL DEFAULT 'api', -- 'api' | 'manual' | 'crm_sync'
+    crm_lead_id     TEXT,                    -- External CRM lead ID for deduplication
 
     -- ping-post CRM result, filled in by a second call after your CRM
     -- responds (see /api/leads/crm-result on the webhook). NULL means

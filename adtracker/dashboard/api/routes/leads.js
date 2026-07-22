@@ -225,4 +225,154 @@ router.post("/sync-status", async (req, res) => {
   }
 });
 
+// POST /api/leads/sync-crm -- full CRM sync with all fields from Google Sheets
+// Matches leads by email/phone/crm_lead_id and creates or updates with full data
+router.post("/sync-crm", async (req, res) => {
+  const { leads } = req.body; // Array of full lead objects from CRM
+
+  if (!Array.isArray(leads)) {
+    return res.status(400).json({ error: "leads must be an array" });
+  }
+
+  const STATUS_MAPPING = {
+    "open": "new",
+    "appointment set": "contacted",
+    "pre-sale qualified": "qualified",
+    "proposal": "qualified",
+    "site assessment": "qualified",
+    "closed won": "won",
+    "closed lost": "lost"
+  };
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    let updated = 0;
+    let created = 0;
+    let matched = 0;
+    const results = [];
+
+    for (const leadData of leads) {
+      const {
+        crm_lead_id,
+        first_name,
+        last_name,
+        email,
+        phone,
+        created_date,
+        lead_source,
+        last_modified_date,
+        status,
+        disqualified_reason,
+        outbound_calls,
+        converted,
+        converted_date,
+        opportunity_name,
+        stage,
+        closed_lost_reason,
+        full_address,
+        zip_code,
+        web_source_campaign
+      } = leadData;
+
+      if (!email && !phone) {
+        results.push({ error: "Missing email or phone", data: leadData });
+        continue;
+      }
+
+      const mappedStatus = STATUS_MAPPING[status?.toLowerCase()] || "new";
+
+      // Try to match by crm_lead_id first, then email/phone
+      let { rows } = await client.query(
+        `SELECT id, status FROM leads 
+         WHERE crm_lead_id = $1 
+         LIMIT 1`,
+        [crm_lead_id]
+      );
+
+      if (rows.length === 0) {
+        // Try email/phone match
+        rows = await client.query(
+          `SELECT id, status FROM leads 
+           WHERE email = $1 OR phone = $2 
+           LIMIT 1`,
+          [email, phone]
+        );
+      }
+
+      if (rows.length === 0) {
+        // Create new lead
+        const name = [first_name, last_name].filter(Boolean).join(' ') || null;
+        const { rows: newLead } = await client.query(
+          `INSERT INTO leads (name, first_name, last_name, email, phone, full_address, zip_code,
+             lead_source, stage, opportunity_name, converted, converted_date, outbound_calls,
+             disqualified_reason, closed_lost_reason, web_source_campaign, status, source, crm_lead_id,
+             created_at, updated_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
+           RETURNING id`,
+          [
+            name, first_name, last_name, email, phone, full_address, zip_code,
+            lead_source, stage, opportunity_name, 
+            converted === true || converted === 'Yes' || converted === 'TRUE',
+            converted_date || null,
+            parseInt(outbound_calls) || 0,
+            disqualified_reason, closed_lost_reason, web_source_campaign,
+            mappedStatus, 'crm_sync', crm_lead_id,
+            created_date || new Date().toISOString(),
+            last_modified_date || new Date().toISOString()
+          ]
+        );
+        created++;
+        results.push({ success: true, lead_id: newLead[0].id, action: 'created' });
+      } else {
+        // Update existing lead
+        const lead = rows[0];
+        const name = [first_name, last_name].filter(Boolean).join(' ') || lead.name;
+        
+        await client.query(
+          `UPDATE leads 
+           SET name = $1, first_name = $2, last_name = $3, email = $4, phone = $5, full_address = $6, zip_code = $7,
+              lead_source = $8, stage = $9, opportunity_name = $10, converted = $11, converted_date = $12, 
+              outbound_calls = $13, disqualified_reason = $14, closed_lost_reason = $15, 
+              web_source_campaign = $16, status = $17, crm_lead_id = $18, updated_at = $19
+           WHERE id = $20`,
+          [
+            name, first_name, last_name, email, phone, full_address, zip_code,
+            lead_source, stage, opportunity_name,
+            converted === true || converted === 'Yes' || converted === 'TRUE',
+            converted_date || null,
+            parseInt(outbound_calls) || 0,
+            disqualified_reason, closed_lost_reason, web_source_campaign,
+            mappedStatus, crm_lead_id, last_modified_date || new Date().toISOString(),
+            lead.id
+          ]
+        );
+
+        // Log status change if different
+        if (lead.status !== mappedStatus) {
+          await client.query(
+            `INSERT INTO lead_edits (lead_id, field_name, old_value, new_value)
+             VALUES ($1, 'status', $2, $3)`,
+            [lead.id, lead.status, mappedStatus]
+          );
+        }
+
+        updated++;
+        results.push({ success: true, lead_id: lead.id, action: 'updated' });
+      }
+      matched++;
+    }
+
+    await client.query("COMMIT");
+    res.json({ matched, updated, created, results });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    console.error("Failed to sync CRM data:", err);
+    res.status(500).json({ error: "Failed to sync CRM data" });
+  } finally {
+    client.release();
+  }
+});
+
 module.exports = router;
