@@ -14,6 +14,7 @@ function getInitialTheme() {
 
 export default function App() {
   const [authed, setAuthed] = useState(false);
+  const [validating, setValidating] = useState(true);
   const [tab, setTab] = useState("overview");
   const [keywordFilter, setKeywordFilter] = useState(null); // { id, text } | null
   const [theme, setTheme] = useState(getInitialTheme);
@@ -23,10 +24,26 @@ export default function App() {
     localStorage.setItem("adtracker_theme", theme);
   }, [theme]);
 
-  // Clear any existing credentials on load to prevent auto-login
   useEffect(() => {
-    clearCredentials();
+    async function validateCredentials() {
+      if (hasCredentials()) {
+        try {
+          await getCampaigns();
+          setAuthed(true);
+        } catch {
+          clearCredentials();
+        }
+      }
+      setValidating(false);
+    }
+    validateCredentials();
   }, []);
+
+  if (validating) {
+    return <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh", background: "var(--bg)" }}>
+      <div className="neu-spinner"></div>
+    </div>;
+  }
 
   if (!authed) {
     return <LoginScreen onSuccess={() => setAuthed(true)} />;
