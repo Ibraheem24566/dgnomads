@@ -164,6 +164,21 @@ CREATE INDEX idx_leads_keyword ON leads(keyword_id);
 CREATE INDEX idx_leads_created_at ON leads(created_at);
 
 -- ---------------------------------------------------------
+-- 6. GCLID mappings for keyword attribution
+-- Stores the relationship between gclid and keyword_id
+-- ---------------------------------------------------------
+
+CREATE TABLE gclid_mappings (
+    id              BIGSERIAL PRIMARY KEY,
+    gclid           TEXT NOT NULL,
+    keyword_id      BIGINT NOT NULL REFERENCES keywords(id),
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_gclid_mappings_gclid ON gclid_mappings(gclid);
+CREATE INDEX idx_gclid_mappings_keyword ON gclid_mappings(keyword_id);
+
+-- ---------------------------------------------------------
 -- 4. Audit log for manual edits made in the dashboard
 -- Keeps synced data trustworthy by tracking human overrides
 -- separately from what came in automatically.
