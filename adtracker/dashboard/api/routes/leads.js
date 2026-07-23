@@ -411,12 +411,13 @@ router.post("/create-from-logs", async (req, res) => {
       
       // Fallback: try matching by raw_keyword_text if gclid didn't match
       if (!keyword_id && raw_keyword_text) {
+        // Try exact match first
         const { rows } = await client.query(
           `SELECT k.id AS keyword_id, ag.id AS ad_group_id, c.id AS campaign_id
            FROM keywords k
            JOIN ad_groups ag ON ag.id = k.ad_group_id
            JOIN campaigns c ON c.id = ag.campaign_id
-           WHERE k.text = $1
+           WHERE LOWER(k.text) = LOWER($1)
            LIMIT 1`,
           [raw_keyword_text]
         );
@@ -425,7 +426,23 @@ router.post("/create-from-logs", async (req, res) => {
           ({ campaign_id, ad_group_id, keyword_id } = rows[0]);
           match_status = "matched";
         } else {
-          match_status = "no_match";
+          // Try partial match (contains)
+          const { rows: partialRows } = await client.query(
+            `SELECT k.id AS keyword_id, ag.id AS ad_group_id, c.id AS campaign_id
+             FROM keywords k
+             JOIN ad_groups ag ON ag.id = k.ad_group_id
+             JOIN campaigns c ON c.id = ag.campaign_id
+             WHERE LOWER(k.text) LIKE LOWER($1) OR LOWER($1) LIKE LOWER(k.text)
+             LIMIT 1`,
+            [raw_keyword_text]
+          );
+          
+          if (partialRows.length > 0) {
+            ({ campaign_id, ad_group_id, keyword_id } = partialRows[0]);
+            match_status = "matched";
+          } else {
+            match_status = "no_match";
+          }
         }
       }
     }
